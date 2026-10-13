@@ -1,0 +1,8 @@
+{
+  "name": "Medi-RAG",
+  "description": "Educational medical decision-support assistant powered by local IndexedDB RAG, symptom analysis, and Gemini with verifiable citations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
