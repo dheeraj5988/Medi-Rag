@@ -33,6 +33,40 @@ export interface EmbedResult {
   code?: string;
 }
 
+/** Counts real Gemini requests so the app (and the Test Lab) can show how many one analysis used. */
+export const callCounter = { total: 0, generate: 0, stream: 0, embed: 0, rerank: 0 };
+export function resetCallCounter(): void {
+  callCounter.total = callCounter.generate = callCounter.stream = callCounter.embed = callCounter.rerank = 0;
+}
+function countCall(kind: 'generate' | 'stream' | 'embed' | 'rerank'): void {
+  callCounter[kind]++;
+  callCounter.total++;
+}
+
+export interface ServerHealth {
+  reachable: boolean;
+  hasApiKey: boolean;
+}
+
+let healthCache: { at: number; value: ServerHealth } | null = null;
+
+/** Is the server up, and does it have a Gemini key? (cached for 20 s) */
+export async function fetchHealth(force = false): Promise<ServerHealth> {
+  if (!force && healthCache && Date.now() - healthCache.at < 20000) return healthCache.value;
+  let value: ServerHealth = { reachable: false, hasApiKey: false };
+  try {
+    const res = await fetch('/api/health');
+    if (res.ok) {
+      const d = await res.json();
+      value = { reachable: true, hasApiKey: Boolean(d.hasApiKey) };
+    }
+  } catch {
+    // server unreachable
+  }
+  healthCache = { at: Date.now(), value };
+  return value;
+}
+
 /**
  * Fetch available Gemini models from the server
  */
@@ -68,6 +102,7 @@ export async function fetchAvailableModels(): Promise<{
  * Generate text or structured JSON from Gemini with automatic fallback
  */
 export async function generateContent(options: GenerateOptions): Promise<GenerateResult> {
+  countCall('generate');
   try {
     const res = await fetch('/api/gemini/generate', {
       method: 'POST',
@@ -118,6 +153,7 @@ export async function streamContent(
     onFallbackNotice?: (message: string) => void;
   }
 ): Promise<void> {
+  countCall('stream');
   try {
     const res = await fetch('/api/gemini/stream', {
       method: 'POST',
@@ -189,8 +225,11 @@ export async function embedTexts(params: {
   model?: string;
   texts: string[];
   docName?: string;
+  /** Optional per-text document titles (otherwise `docName` is used for all). */
+  titles?: string[];
   query?: boolean;
 }): Promise<EmbedResult> {
+  countCall('embed');
   try {
     const res = await fetch('/api/gemini/embed', {
       method: 'POST',
@@ -199,6 +238,7 @@ export async function embedTexts(params: {
         model: params.model || EMBEDDING_MODEL,
         texts: params.texts,
         docName: params.docName,
+        titles: params.titles,
         query: params.query,
       }),
     });
@@ -242,6 +282,7 @@ export async function rerankPassages(
   passages: string[],
   model?: string
 ): Promise<number[]> {
+  countCall('rerank');
   try {
     const res = await fetch('/api/gemini/rerank', {
       method: 'POST',

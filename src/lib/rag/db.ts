@@ -154,22 +154,41 @@ export async function clearAllData(): Promise<void> {
   });
 }
 
+/** Replace stored chunks (same ids) - used to add vectors to built-in passages after they were first saved. */
+export async function updateChunks(chunks: StoredChunk[]): Promise<void> {
+  return saveChunks(chunks);
+}
+
+/** Remove every built-in or legacy sample document (and its chunks) so the shipped knowledge base can be re-seeded. */
+export async function deleteBuiltInAndSampleDocuments(): Promise<void> {
+  const docs = await getAllDocuments();
+  for (const d of docs) {
+    if (d.isBuiltIn || d.isSample) await deleteDocument(d.id);
+  }
+}
+
 export async function getStorageStats(): Promise<{
   docCount: number;
   chunkCount: number;
+  /** Embedding models that have real vectors in the index (keyword-only passages are not listed). */
   modelsUsed: string[];
-  isOnlySampleDocs: boolean;
+  builtInDocCount: number;
+  userDocCount: number;
+  /** Passages that have no vector yet (keyword search only). */
+  chunksWithoutVectors: number;
 }> {
   const docs = await getAllDocuments();
   const chunks = await getAllChunks();
 
-  const modelsUsed = Array.from(new Set(chunks.map((c) => c.embeddingModel))).filter(Boolean);
-  const nonSampleDocs = docs.filter((d) => !d.isSample);
+  const withVectors = chunks.filter((c) => c.vector && c.vector.length > 0);
+  const modelsUsed = Array.from(new Set(withVectors.map((c) => c.embeddingModel))).filter(Boolean);
 
   return {
     docCount: docs.length,
     chunkCount: chunks.length,
     modelsUsed,
-    isOnlySampleDocs: docs.length > 0 && nonSampleDocs.length === 0,
+    builtInDocCount: docs.filter((d) => d.isBuiltIn).length,
+    userDocCount: docs.filter((d) => !d.isBuiltIn && !d.isSample).length,
+    chunksWithoutVectors: chunks.length - withVectors.length,
   };
 }

@@ -1,0 +1,31 @@
+{
+ "method": "Naive Bayes scoring reported symptoms (plus a mild 0.1-weight penalty for unreported typical ones); 75/25 split on unique symptom patterns; held-out patterns re-tested with k randomly chosen symptoms (20 draws)",
+ "robustness": [
+  {
+   "symptoms_reported": 2,
+   "samples": 1520,
+   "top1": 0.709,
+   "top3": 0.926
+  },
+  {
+   "symptoms_reported": 3,
+   "samples": 1520,
+   "top1": 0.873,
+   "top3": 0.972
+  },
+  {
+   "symptoms_reported": 4,
+   "samples": 1360,
+   "top1": 0.926,
+   "top3": 0.974
+  },
+  {
+   "symptoms_reported": 5,
+   "samples": 1280,
+   "top1": 0.97,
+   "top3": 0.99
+  }
+ ],
+ "diseases_unseen_in_train_split": [],
+ "caveat": "Synthetic public dataset: each disease has a distinctive symptom signature, so real-world accuracy will be lower. Educational use only."
+}

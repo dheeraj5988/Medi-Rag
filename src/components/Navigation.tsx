@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   MessageSquare,
   Stethoscope,
@@ -10,7 +10,10 @@ import {
   ShieldAlert,
   Moon,
   Sun,
+  Menu,
+  Type,
 } from 'lucide-react';
+import { Sheet } from './Sheet';
 
 export type ScreenId = 'chat' | 'symptoms' | 'knowledge' | 'testlab' | 'settings' | 'about' | 'readme';
 
@@ -19,115 +22,146 @@ interface NavigationProps {
   onNavigate: (screen: ScreenId) => void;
   darkMode: boolean;
   onToggleDarkMode: () => void;
+  textSize: 'normal' | 'large';
+  onToggleTextSize: () => void;
   redFlagActive?: boolean;
 }
+
+const NAV_ITEMS: Array<{ id: ScreenId; label: string; short: string; icon: React.ReactNode }> = [
+  { id: 'symptoms', label: 'Symptom Checker', short: 'Check', icon: <Stethoscope className="w-5 h-5" /> },
+  { id: 'chat', label: 'Consultation', short: 'Chat', icon: <MessageSquare className="w-5 h-5" /> },
+  { id: 'knowledge', label: 'Knowledge Base', short: 'Library', icon: <BookOpen className="w-5 h-5" /> },
+  { id: 'testlab', label: 'Test Lab', short: 'Lab', icon: <FlaskConical className="w-5 h-5" /> },
+  { id: 'settings', label: 'Settings', short: 'Settings', icon: <Settings className="w-5 h-5" /> },
+  { id: 'about', label: 'About & Clinical Safety', short: 'About', icon: <Info className="w-5 h-5" /> },
+  { id: 'readme', label: 'Architecture Doc', short: 'Docs', icon: <FileCode className="w-5 h-5" /> },
+];
+
+const PRIMARY_TABS: ScreenId[] = ['symptoms', 'chat', 'knowledge', 'testlab'];
+
+const Logo: React.FC<{ onClick: () => void }> = ({ onClick }) => (
+  <button onClick={onClick} className="flex items-center gap-2.5 text-left tap-auto min-h-0 shrink-0" aria-label="Medi-RAG home">
+    <span className="floaty w-9 h-9 rounded-xl border-[1.5px] border-slate-900 dark:border-lime-400 bg-lime-400 text-slate-900 flex items-center justify-center font-display font-extrabold text-lg shadow-xs">
+      M
+    </span>
+    <span className="font-display text-xl font-extrabold tracking-tight text-slate-900 dark:text-white leading-none whitespace-nowrap">
+      Medi-RAG
+      <span className="hidden 2xl:block text-xs font-sans font-semibold text-slate-500 dark:text-slate-400 mt-0.5 tracking-normal">
+        Educational health companion
+      </span>
+    </span>
+  </button>
+);
 
 export const Navigation: React.FC<NavigationProps> = ({
   activeScreen,
   onNavigate,
   darkMode,
   onToggleDarkMode,
+  textSize,
+  onToggleTextSize,
   redFlagActive = false,
 }) => {
-  const navItems: Array<{ id: ScreenId; label: string; icon: React.ReactNode }> = [
-    { id: 'chat', label: 'Consultation', icon: <MessageSquare className="w-4 h-4" /> },
-    { id: 'symptoms', label: 'Symptom Checker', icon: <Stethoscope className="w-4 h-4" /> },
-    { id: 'knowledge', label: 'Knowledge Base', icon: <BookOpen className="w-4 h-4" /> },
-    { id: 'testlab', label: 'Test Lab', icon: <FlaskConical className="w-4 h-4" /> },
-    { id: 'settings', label: 'Settings', icon: <Settings className="w-4 h-4" /> },
-    { id: 'about', label: 'About & Clinical Safety', icon: <Info className="w-4 h-4" /> },
-    { id: 'readme', label: 'Architecture Doc', icon: <FileCode className="w-4 h-4" /> },
-  ];
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreActive = !PRIMARY_TABS.includes(activeScreen);
+
+  const go = (id: ScreenId) => {
+    setMoreOpen(false);
+    onNavigate(id);
+  };
 
   return (
-    <header className="border-b border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-900/95 backdrop-blur-sm sticky top-0 z-40 transition-colors">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-4">
-        {/* Zone 1: Single text wordmark */}
-        <div className="flex items-center gap-3 shrink-0">
-          <button
-            onClick={() => onNavigate('chat')}
-            className="flex items-center gap-2.5 text-left group focus-visible:outline-none"
-          >
-            <div className="w-8 h-8 rounded-lg bg-teal-600 dark:bg-teal-500 text-white flex items-center justify-center font-bold text-base shadow-sm">
-              M
-            </div>
-            <div>
-              <span className="text-lg font-bold tracking-tight text-slate-900 dark:text-white whitespace-nowrap">
-                Medi-RAG
-              </span>
-              <span className="hidden sm:inline-block text-xs text-slate-500 dark:text-slate-400 ml-2 font-normal">
-                Clinical Decision Support
-              </span>
-            </div>
-          </button>
-        </div>
+    <>
+      {/* Top bar: slim on phones, full navigation from md up */}
+      <header className="print:hidden shrink-0 border-b-[1.5px] border-slate-900 dark:border-slate-700 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md z-30 pt-[var(--safe-top)]">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-2.5 flex items-center justify-between gap-4">
+          <Logo onClick={() => go('symptoms')} />
 
-        {/* Zone 2: Concise single-line navigation links */}
-        <nav className="hidden md:flex items-center gap-1 overflow-x-auto py-1">
-          {navItems.map((item) => {
-            const isActive = activeScreen === item.id;
+          <nav className="hidden md:flex items-center gap-1" aria-label="Main">
+            {NAV_ITEMS.map((item) => {
+              const isActive = activeScreen === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => go(item.id)}
+                  aria-current={isActive ? 'page' : undefined}
+                  aria-label={item.label}
+                  title={item.label}
+                  className={`flex items-center gap-1.5 px-2.5 lg:px-3 py-2 text-sm font-bold rounded-xl whitespace-nowrap border-[1.5px] transition-colors ${
+                    isActive
+                      ? 'bg-lime-400 text-slate-900 border-slate-900 dark:border-lime-400'
+                      : 'border-transparent text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  {React.cloneElement(item.icon as React.ReactElement<{ className?: string }>, { className: 'w-4 h-4' })}
+                  {/* icon only from 768px, short label from 1024px, full label from 1536px */}
+                  <span className="hidden 2xl:inline">{item.label}</span>
+                  <span className="hidden lg:inline 2xl:hidden">{item.short}</span>
+                </button>
+              );
+            })}
+          </nav>
+
+          <div className="flex items-center gap-2 shrink-0">
+            {redFlagActive && (
+              <button onClick={() => go('symptoms')} className="btn btn-danger btn-sm animate-pulse">
+                <ShieldAlert className="w-4 h-4" />
+                <span className="hidden sm:inline">Red flag active</span>
+              </button>
+            )}
+            <button onClick={onToggleTextSize} aria-pressed={textSize === 'large'} aria-label="Toggle larger text" className="btn btn-ghost btn-sm hidden md:inline-flex">
+              <Type className="w-4 h-4" />
+            </button>
+            <button onClick={onToggleDarkMode} aria-label="Toggle color theme" className="btn btn-ghost btn-sm">
+              {darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Bottom tab bar (phones only) */}
+      <nav className="tabbar md:hidden print:hidden" aria-label="Main">
+        {PRIMARY_TABS.map((id) => {
+          const item = NAV_ITEMS.find((n) => n.id === id)!;
+          return (
+            <button key={id} className="tab" aria-current={activeScreen === id ? 'page' : undefined} onClick={() => go(id)}>
+              {item.icon}
+              <span>{item.short}</span>
+            </button>
+          );
+        })}
+        <button className="tab" aria-current={moreActive ? 'page' : undefined} onClick={() => setMoreOpen(true)} aria-haspopup="dialog">
+          <Menu className="w-5 h-5" />
+          <span>More</span>
+        </button>
+      </nav>
+
+      <Sheet open={moreOpen} onClose={() => setMoreOpen(false)} title="More">
+        <div className="grid gap-2">
+          {(['settings', 'about', 'readme'] as ScreenId[]).map((id) => {
+            const item = NAV_ITEMS.find((n) => n.id === id)!;
             return (
-              <button
-                key={item.id}
-                onClick={() => onNavigate(item.id)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md whitespace-nowrap transition-colors ${
-                  isActive
-                    ? 'bg-teal-50 text-teal-800 dark:bg-teal-950/60 dark:text-teal-300 font-semibold'
-                    : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-800/60'
-                }`}
-              >
+              <button key={id} onClick={() => go(id)} className="btn justify-start w-full text-left" aria-current={activeScreen === id ? 'page' : undefined}>
                 {item.icon}
                 <span>{item.label}</span>
               </button>
             );
           })}
-        </nav>
-
-        {/* Zone 3: 1 Primary Action + Theme Toggle */}
-        <div className="flex items-center gap-2.5 shrink-0">
-          <button
-            onClick={onToggleDarkMode}
-            aria-label="Toggle color theme"
-            className="p-1.5 rounded-md text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-          >
-            {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-          </button>
-
-          {redFlagActive ? (
-            <button
-              onClick={() => onNavigate('symptoms')}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-900 rounded-md whitespace-nowrap animate-pulse"
-            >
-              <ShieldAlert className="w-3.5 h-3.5" />
-              <span>Red Flag Active</span>
-            </button>
-          ) : (
-            <button
-              onClick={() => onNavigate('symptoms')}
-              className="px-3.5 py-1.5 text-xs font-medium text-white bg-teal-700 hover:bg-teal-800 dark:bg-teal-600 dark:hover:bg-teal-500 rounded-md shadow-sm transition-colors whitespace-nowrap"
-            >
-              Check Symptoms
-            </button>
-          )}
         </div>
-      </div>
-
-      {/* Mobile nav drawer row */}
-      <div className="md:hidden flex items-center gap-1 overflow-x-auto px-4 py-2 border-t border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50">
-        {navItems.map((item) => (
-          <button
-            key={item.id}
-            onClick={() => onNavigate(item.id)}
-            className={`px-2.5 py-1 text-xs rounded whitespace-nowrap transition-colors ${
-              activeScreen === item.id
-                ? 'bg-teal-100 text-teal-900 dark:bg-teal-900/60 dark:text-teal-200 font-semibold'
-                : 'text-slate-600 dark:text-slate-400'
-            }`}
-          >
-            {item.label}
+        <div className="mt-5 grid grid-cols-2 gap-2">
+          <button onClick={onToggleDarkMode} className="btn w-full">
+            {darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+            <span>{darkMode ? 'Light mode' : 'Dark mode'}</span>
           </button>
-        ))}
-      </div>
-    </header>
+          <button onClick={onToggleTextSize} aria-pressed={textSize === 'large'} className="btn w-full">
+            <Type className="w-5 h-5" />
+            <span>{textSize === 'large' ? 'Normal text' : 'Larger text'}</span>
+          </button>
+        </div>
+        <p className="mt-5 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+          Educational information, not a medical diagnosis. Please consult a qualified doctor. In an emergency contact your local emergency number.
+        </p>
+      </Sheet>
+    </>
   );
 };

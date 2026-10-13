@@ -7,6 +7,11 @@ export interface StoredDocument {
   dateAdded: string;
   trustedSource: string;
   isSample: boolean;
+  /** Shipped with the app (MedlinePlus public-domain pages) rather than uploaded by the user. */
+  isBuiltIn?: boolean;
+  url?: string;
+  /** Diseases (clean names) this page covers; used for disease-filtered retrieval. */
+  covers?: string[];
 }
 
 export interface StoredChunk {
@@ -19,12 +24,16 @@ export interface StoredChunk {
   embeddingModel: string;
   trustedSource: string;
   wordCount: number;
+  url?: string;
+  covers?: string[];
 }
 
 export interface RetrievalResult {
   chunk: StoredChunk;
   score: number;
   rerankScore?: number;
+  /** How this passage was found: embedding similarity, keyword (BM25) ranking, or disease-filtered ranking. */
+  method?: 'vector' | 'lexical' | 'disease-filter';
 }
 
 export interface ChatCitation {
@@ -79,14 +88,18 @@ export interface ExtractedSymptoms {
 
 export interface ConditionSuggestion {
   condition: string;
-  likelihood: 'low' | 'medium' | 'high';
+  /** 0..1 bar length relative to the best match (the best is 1.0). NOT a probability of disease. */
+  strength: number;
+  strengthLabel: 'strong' | 'moderate' | 'weak';
   matchingSymptoms: string[];
-  reasoning: string;
+  /** Typical symptoms of this condition the user did not report ("Do you also have...?"). */
+  toCheck: string[];
   explanation?: string;
   precautions?: string[];
   nextSteps?: string[];
-  whenToSeeDoctorUrgently?: string;
-  citations?: RetrievalResult[];
+  urgentSigns?: string[];
+  /** Passages used for grounding, each with its global [n] number in the synthesis prompt. */
+  citations?: Array<RetrievalResult & { number: number }>;
 }
 
 export interface RedFlagAlert {
@@ -110,9 +123,12 @@ export interface RetrievalBenchmarkItem {
   id: string;
   query: string;
   expectedKeywords: string[];
+  /** Substring of the document title the top-1 passage should come from. */
+  expectedSource?: string;
   results?: RetrievalResult[];
   hitAt1?: boolean;
   hitAtK?: boolean;
+  docHitAt1?: boolean;
   avgScore?: number;
 }
 
@@ -138,6 +154,9 @@ export interface ModelComparisonResult {
 export interface MLMetrics {
   accuracy: number;
   sampleCount: number;
+  trainCount?: number;
+  uniqueRows?: number;
+  totalRows?: number;
   classes: string[];
   confusionMatrix: number[][];
   precision: Record<string, number>;

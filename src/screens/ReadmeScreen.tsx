@@ -1,125 +1,86 @@
-import React from 'react';
-import { FileCode, CheckCircle2, Shield, ArrowUpRight, Cpu, HardDrive } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { FileCode } from 'lucide-react';
+
+interface EvalFile {
+  method: string;
+  robustness: Array<{ symptoms_reported: number; samples: number; top1: number; top3: number }>;
+  caveat: string;
+}
 
 export const ReadmeScreen: React.FC = () => {
+  const [evalData, setEvalData] = useState<EvalFile | null>(null);
+  useEffect(() => {
+    fetch('/model/symptom_model_eval.json').then((r) => (r.ok ? r.json() : null)).then(setEvalData).catch(() => undefined);
+  }, []);
+
   return (
-    <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 space-y-8">
-      {/* Title */}
-      <div className="border-b border-slate-200 dark:border-slate-800 pb-4">
-        <h1 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white flex items-center gap-2">
-          <FileCode className="w-5 h-5 text-teal-600" />
-          <span>Technical Architecture & Implementation README</span>
+    <div className="max-w-3xl mx-auto px-4 sm:px-6 py-5 md:py-8 space-y-6">
+      <div>
+        <span className="kicker">For developers</span>
+        <h1 className="text-3xl sm:text-4xl font-extrabold leading-[1.05] mt-1 flex items-center gap-2">
+          <FileCode className="w-8 h-8 text-teal-600 shrink-0" aria-hidden="true" />
+          <span>Architecture</span>
         </h1>
-        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-          Engineering design notes, anti-hallucination guardrails, and roadmap extension guides for production deployments.
-        </p>
       </div>
 
-      {/* What Was Built */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-xs space-y-4">
-        <h2 className="text-sm font-bold text-slate-900 dark:text-white">
-          1. System Overview & What Was Built
-        </h2>
-        <div className="text-xs text-slate-600 dark:text-slate-300 space-y-2.5 leading-relaxed">
-          <p>
-            <strong>Medi-RAG</strong> is a full-stack educational medical decision-support assistant that combines client-side IndexedDB vector retrieval, structured symptom entity extraction, red-flag emergency detection, and Google Gemini LLMs with source citations.
-          </p>
-          <ul className="list-disc list-inside space-y-1.5 pl-2">
-            <li>
-              <strong>Conversational Streaming RAG:</strong> Real-time Server-Sent Events (SSE) streaming answers from Gemini with bracketed citations [1], [2] that link directly to exact retrieved passages, page numbers, and cosine similarity scores.
-            </li>
-            <li>
-              <strong>Structured Symptom Checker:</strong> Extracts normalized entities via Gemini structured JSON schemas, calculates condition probabilities, retrieves trusted passages per condition, and provides printable patient reports.
-            </li>
-            <li>
-              <strong>Client-Side Vector Engine:</strong> Ingests PDF/TXT/MD documents using browser <code className="font-mono text-teal-700 dark:text-teal-400">pdfjs-dist</code>, chunks them into ~300-word blocks with 40-word overlap, and embeds them into IndexedDB via <code className="font-mono text-teal-700 dark:text-teal-400">gemini-embedding-2</code>.
-            </li>
-            <li>
-              <strong>Comprehensive Test Lab:</strong> Live connection diagnostics, retrieval keyword hit-rate benchmarks (hit@1, hit@k), AI-groundedness audits, side-by-side model comparisons, in-browser Naive Bayes classifier baseline, and unit test runner.
-            </li>
-          </ul>
-        </div>
-      </div>
+      <section className="card p-5 space-y-3">
+        <h2 className="text-2xl font-extrabold">What is built</h2>
+        <ul className="list-disc pl-5 space-y-2 text-sm leading-relaxed">
+          <li><b>Symptom Checker:</b> symptoms to ids (keyword aliases plus one optional Gemini structured-output call restricted to an enum of valid ids), Naive Bayes shortlist in <code>src/lib/ml/symptomModel.ts</code>, condition-filtered BM25 retrieval, and ONE Gemini synthesis call for all conditions.</li>
+          <li><b>Chat RAG:</b> vector search over passages that have vectors, BM25 keyword search over those that do not, optional Gemini re-ranking, streamed answers with [n] citations.</li>
+          <li><b>Built-in knowledge base:</b> 209 passages from 40 MedlinePlus pages (public domain), shipped as <code>public/kb/kb_chunks.json</code>, searchable with no API key. Optional precomputed vectors: <code>npm run build-kb</code> writes <code>public/kb/kb_vectors.json</code>.</li>
+          <li><b>Server (Express):</b> keeps the Gemini key, per-IP rate limit, input validation, batched one-vector-per-text embeddings, runtime model discovery for fallbacks.</li>
+          <li><b>Test Lab:</b> connection probe, retrieval benchmark (right document and keyword hits), groundedness audit, model comparison, symptom-model evaluation, unit tests, error simulation.</li>
+        </ul>
+      </section>
 
-      {/* Key Design Decisions */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-xs space-y-4">
-        <h2 className="text-sm font-bold text-slate-900 dark:text-white">
-          2. Key Engineering & Clinical UX Decisions
-        </h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-          <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 space-y-1.5">
-            <h3 className="font-bold text-teal-700 dark:text-teal-400">Local Vector Isolation</h3>
-            <p className="text-slate-600 dark:text-slate-300 leading-relaxed text-[11px]">
-              No user documents, text chunks, or embedding vectors are stored on any cloud server or third-party database. All vectors persist in the browser's IndexedDB, ensuring complete patient document privacy.
-            </p>
-          </div>
+      <section className="card p-5 space-y-3">
+        <h2 className="text-2xl font-extrabold">Symptom model evaluation</h2>
+        {evalData ? (
+          <>
+            <p className="text-sm leading-relaxed">{evalData.method}.</p>
+            <table className="rtable text-sm md:text-left">
+              <thead className="hidden md:table-header-group text-xs text-slate-600 dark:text-slate-300">
+                <tr><th className="py-2">Symptoms reported</th><th>Right disease first</th><th>Right disease in top 3</th><th>Samples</th></tr>
+              </thead>
+              <tbody>
+                {evalData.robustness.map((r) => (
+                  <tr key={r.symptoms_reported} className="md:border-b md:border-slate-200 md:dark:border-slate-800">
+                    <td data-label="Symptoms reported" className="md:py-2 font-bold">{r.symptoms_reported}</td>
+                    <td data-label="First" className="font-mono">{(r.top1 * 100).toFixed(1)}%</td>
+                    <td data-label="Top 3" className="font-mono">{(r.top3 * 100).toFixed(1)}%</td>
+                    <td data-label="Samples" className="font-mono">{r.samples}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">{evalData.caveat}</p>
+          </>
+        ) : (
+          <p className="text-sm">Evaluation file not found (public/model/symptom_model_eval.json).</p>
+        )}
+      </section>
 
-          <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 space-y-1.5">
-            <h3 className="font-bold text-teal-700 dark:text-teal-400">No Aggregation Bug in Embeddings</h3>
-            <p className="text-slate-600 dark:text-slate-300 leading-relaxed text-[11px]">
-              When calling <code className="font-mono">gemini-embedding-2</code>, multi-part strings can accidentally return an aggregated single vector. Medi-RAG embeds each chunk distinctly and strictly asserts <code className="font-mono">embeddings.length === chunks.length</code>.
-            </p>
-          </div>
+      <section className="card p-5 space-y-3">
+        <h2 className="text-2xl font-extrabold">Design decisions</h2>
+        <ul className="list-disc pl-5 space-y-2 text-sm leading-relaxed">
+          <li><b>ML first, LLM second.</b> Gemini no longer guesses diagnoses. It only explains the model's shortlist from retrieved text.</li>
+          <li><b>Few API calls.</b> An analysis uses at most two Gemini requests; retrieval for each predicted condition is local and free. The Test Lab shows the count of the last analysis.</li>
+          <li><b>Works with no key.</b> ML shortlist and keyword retrieval are fully local; Gemini features switch on when <code>GEMINI_API_KEY</code> is set.</li>
+          <li><b>Embedding gotcha handled.</b> With <code>gemini-embedding-2</code> a plain list of strings yields one merged vector, so each text is its own Content and counts are verified.</li>
+          <li><b>429 vs 503.</b> 429 is never retried (retries burn quota) but falls back to another model; 503 falls back too. The list of fallback models comes from <code>ai.models.list()</code>, not a hard-coded list.</li>
+          <li><b>Deterministic red flags.</b> Emergency phrases are matched by code before anything else and show a sticky banner.</li>
+        </ul>
+      </section>
 
-          <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 space-y-1.5">
-            <h3 className="font-bold text-teal-700 dark:text-teal-400">Automated Flash Fallback Hierarchy</h3>
-            <p className="text-slate-600 dark:text-slate-300 leading-relaxed text-[11px]">
-              If the primary model (<code className="font-mono">gemini-3.8-flash</code>) encounters a 429 quota or 503 overload event, requests automatically fall back to <code className="font-mono">gemini-3.1-flash-lite</code> without crashing.
-            </p>
-          </div>
-
-          <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 space-y-1.5">
-            <h3 className="font-bold text-teal-700 dark:text-teal-400">Immediate Red-Flag Interception</h3>
-            <p className="text-slate-600 dark:text-slate-300 leading-relaxed text-[11px]">
-              Life-threatening phrases (e.g. chest pain, severe shortness of breath, FAST stroke signs) trigger an unmissable red alert banner with direct telephone emergency links before any AI generation.
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {/* How to Extend */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-xs space-y-4">
-        <h2 className="text-sm font-bold text-slate-900 dark:text-white">
-          3. Production Roadmap & How to Extend
-        </h2>
-        <div className="space-y-3 text-xs text-slate-600 dark:text-slate-300">
-          <div className="border-l-2 border-teal-500 pl-3 py-0.5 space-y-1">
-            <h3 className="font-bold text-slate-900 dark:text-white">
-              A. Cloud Vector Database Integration (Pinecone, pgvector, or Milvus)
-            </h3>
-            <p className="text-[11px] leading-relaxed">
-              To scale beyond personal browser storage to enterprise institutional guidelines with millions of chunks, replace <code className="font-mono">src/lib/rag/db.ts</code> with a server-side pgvector or Pinecone adapter while preserving the exact <code className="font-mono">rankChunks</code> and <code className="font-mono">retrievePassages</code> contract.
-            </p>
-          </div>
-
-          <div className="border-l-2 border-teal-500 pl-3 py-0.5 space-y-1">
-            <h3 className="font-bold text-slate-900 dark:text-white">
-              B. Scanned Document OCR (Tesseract.js / Gemini Vision)
-            </h3>
-            <p className="text-[11px] leading-relaxed">
-              Currently, image-only scanned PDFs trigger a warning. Integrating Tesseract.js or sending base64 document page images to Gemini 3.8 Flash multimodal vision will enable optical character recognition of scanned lab reports and physical clinical paperwork.
-            </p>
-          </div>
-
-          <div className="border-l-2 border-teal-500 pl-3 py-0.5 space-y-1">
-            <h3 className="font-bold text-slate-900 dark:text-white">
-              C. EHR & Wearable Biometrics Integration (FHIR / Apple HealthKit)
-            </h3>
-            <p className="text-[11px] leading-relaxed">
-              Connect patient profiles with HL7 FHIR APIs or wearable biometric streams (resting heart rate, SpO2, blood pressure) to enrich the symptom intake pipeline with objective physiological baselines.
-            </p>
-          </div>
-
-          <div className="border-l-2 border-teal-500 pl-3 py-0.5 space-y-1">
-            <h3 className="font-bold text-slate-900 dark:text-white">
-              D. Clinician-in-the-Loop Review Mode
-            </h3>
-            <p className="text-[11px] leading-relaxed">
-              Add a dual-view portal where a registered clinician can review the patient's symptom submission, inspect the retrieved passage excerpts, and append signed physician notes before sharing educational outputs with patients.
-            </p>
-          </div>
-        </div>
-      </div>
+      <section className="card p-5 space-y-3">
+        <h2 className="text-2xl font-extrabold">Roadmap</h2>
+        <ul className="list-disc pl-5 space-y-2 text-sm leading-relaxed">
+          <li>Semantic vectors for the whole built-in library (run <code>npm run build-kb</code> once with a key) and a hybrid BM25 + vector ranker.</li>
+          <li>More conditions and more documents (WHO, CDC, NHS) with a clinician-reviewed evaluation set.</li>
+          <li>OCR for scanned PDFs, voice input, more languages, clinician review mode, EHR and wearable integration.</li>
+        </ul>
+      </section>
     </div>
   );
 };

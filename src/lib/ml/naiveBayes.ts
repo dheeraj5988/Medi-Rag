@@ -136,17 +136,54 @@ export function parseSymptomCSV(csvText: string): ParsedCSVDataset {
   };
 }
 
+/** Small seeded PRNG (mulberry32) so the shuffle is real but reproducible. */
+export function seededRandom(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Fisher-Yates shuffle with a seeded PRNG. (The original used sort(() => constant), which never shuffled.) */
+export function seededShuffle<T>(items: T[], seed = 42): T[] {
+  const rand = seededRandom(seed);
+  const out = items.slice();
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+/** Remove duplicate (features, label) rows so identical rows cannot appear in both train and test. */
+export function dedupeRows(rows: DatasetRow[]): DatasetRow[] {
+  const seen = new Set<string>();
+  const out: DatasetRow[] = [];
+  for (const r of rows) {
+    const key = `${r.label}|${r.features.join('')}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push(r);
+    }
+  }
+  return out;
+}
+
 /**
- * Train and evaluate Naive Bayes on 80/20 train/test split
+ * Train and evaluate Naive Bayes on an 80/20 split of UNIQUE rows (seeded shuffle, deterministic).
  */
 export function trainAndEvaluateClassifier(dataset: ParsedCSVDataset): MLMetrics {
-  const { rows, featureNames } = dataset;
+  const { featureNames } = dataset;
+  const rows = dedupeRows(dataset.rows);
   if (rows.length < 5) {
-    throw new Error('At least 5 samples are required to train and evaluate.');
+    throw new Error('At least 5 unique samples are required to train and evaluate.');
   }
 
-  // Shuffle rows deterministically
-  const shuffled = [...rows].sort(() => Math.sin(12345) - 0.5);
+  const shuffled = seededShuffle(rows, 42);
   const trainSize = Math.max(1, Math.floor(shuffled.length * 0.8));
   const trainSet = shuffled.slice(0, trainSize);
   const testSet = shuffled.slice(trainSize);
@@ -207,6 +244,9 @@ export function trainAndEvaluateClassifier(dataset: ParsedCSVDataset): MLMetrics
   return {
     accuracy: Number(accuracy.toFixed(3)),
     sampleCount: testSet.length,
+    trainCount: trainSet.length,
+    uniqueRows: rows.length,
+    totalRows: dataset.rows.length,
     classes,
     confusionMatrix,
     precision,

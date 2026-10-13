@@ -1,21 +1,8 @@
-import React, { useState } from 'react';
-import {
-  Settings,
-  Sliders,
-  Database,
-  Trash2,
-  Download,
-  AlertTriangle,
-  CheckCircle2,
-  Type,
-  Shield,
-  Layers,
-} from 'lucide-react';
-import {
-  AVAILABLE_GENERATION_MODELS,
-  AVAILABLE_EMBEDDING_MODELS,
-} from '../constants';
+import React, { useEffect, useState } from 'react';
+import { Settings, Sliders, Database, Trash2, Download, Type, Layers } from 'lucide-react';
+import { AVAILABLE_GENERATION_MODELS, AVAILABLE_EMBEDDING_MODELS } from '../constants';
 import { getAllDocuments, getAllChunks, clearAllData } from '../lib/rag/db';
+import { fetchAvailableModels, fetchHealth } from '../lib/gemini/client';
 
 interface SettingsScreenProps {
   generationModel: string;
@@ -32,6 +19,16 @@ interface SettingsScreenProps {
   onSetTextSize: (size: 'normal' | 'large') => void;
 }
 
+const Section: React.FC<{ icon: React.ReactNode; title: string; children: React.ReactNode }> = ({ icon, title, children }) => (
+  <section className="card p-4 sm:p-6 space-y-5">
+    <h2 className="text-xl font-extrabold flex items-center gap-2">
+      <span className="text-teal-600" aria-hidden="true">{icon}</span>
+      <span>{title}</span>
+    </h2>
+    {children}
+  </section>
+);
+
 export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   generationModel,
   onSetGenerationModel,
@@ -46,271 +43,149 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   textSize,
   onSetTextSize,
 }) => {
-  const [exportMessage, setExportMessage] = useState<string | null>(null);
-  const [deleteMessage, setDeleteMessage] = useState<string | null>(null);
+  const [message, setMessage] = useState<{ kind: 'ok' | 'bad'; text: string } | null>(null);
+  const [discovered, setDiscovered] = useState<Array<{ id: string; name: string }>>([]);
+  const [hasKey, setHasKey] = useState(false);
 
-  // Export all IndexedDB data to JSON file
+  useEffect(() => {
+    (async () => {
+      const health = await fetchHealth();
+      setHasKey(health.hasApiKey);
+      if (!health.hasApiKey) return;
+      const { models } = await fetchAvailableModels();
+      setDiscovered(
+        models
+          .filter((m) => m.name.startsWith('gemini') && m.name.includes('flash') && !/(embed|image|tts|live|audio|thinking|preview|exp)/.test(m.name))
+          .map((m) => ({ id: m.name, name: m.displayName || m.name }))
+      );
+    })();
+  }, []);
+
+  const known = new Set(AVAILABLE_GENERATION_MODELS.map((m) => m.id));
+  const extra = discovered.filter((m) => !known.has(m.id));
+
   const handleExportData = async () => {
     try {
       const docs = await getAllDocuments();
-      const chunks = await getAllChunks();
-      const payload = {
-        exportedAt: new Date().toISOString(),
-        documents: docs,
-        chunks: chunks,
-      };
-
-      const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(payload, null, 2));
-      const downloadAnchor = document.createElement('a');
-      downloadAnchor.setAttribute('href', dataStr);
-      downloadAnchor.setAttribute('download', `medi_rag_export_${new Date().toISOString().slice(0, 10)}.json`);
-      document.body.appendChild(downloadAnchor);
-      downloadAnchor.click();
-      downloadAnchor.remove();
-
-      setExportMessage(`Successfully exported ${docs.length} documents and ${chunks.length} vector chunks.`);
+      const chunks = (await getAllChunks()).map((c) => ({ ...c, vector: [] as number[] })); // vectors omitted: they are large and re-creatable
+      const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), documents: docs, chunks }, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `medi_rag_export_${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(a.href);
+      setMessage({ kind: 'ok', text: `Exported ${docs.length} documents and ${chunks.length} passages (without vectors).` });
     } catch (err: unknown) {
-      setExportMessage(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
+      setMessage({ kind: 'bad', text: `Export failed: ${err instanceof Error ? err.message : String(err)}` });
     }
   };
 
-  // Delete all user data
   const handleDeleteAllData = async () => {
-    if (!window.confirm('Are you sure you want to delete ALL documents, chunks, and chat history? This action is permanent and cannot be undone.')) {
-      return;
-    }
-
+    if (!window.confirm('Delete ALL documents, passages and chat history stored in this browser? Your uploads are lost. The built-in library is restored automatically.')) return;
     try {
       await clearAllData();
       localStorage.removeItem('medi_rag_chat_history');
-      setDeleteMessage('All IndexedDB documents, vectors, and chat history have been permanently wiped.');
+      localStorage.removeItem('medi_rag_kb_version');
+      setMessage({ kind: 'ok', text: 'Everything was deleted. The built-in MedlinePlus library will be restored the next time you open the Library or Check tab.' });
     } catch (err: unknown) {
-      setDeleteMessage(`Failed to clear data: ${err instanceof Error ? err.message : String(err)}`);
+      setMessage({ kind: 'bad', text: `Failed to clear data: ${err instanceof Error ? err.message : String(err)}` });
     }
   };
 
   return (
-    <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 space-y-6">
-      <div className="border-b border-slate-200 dark:border-slate-800 pb-4">
-        <h1 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white flex items-center gap-2">
-          <Settings className="w-5 h-5 text-teal-600" />
-          <span>System & RAG Hyperparameters</span>
+    <div className="max-w-3xl mx-auto px-4 sm:px-6 py-5 md:py-8 space-y-5">
+      <div>
+        <span className="kicker">Make it yours</span>
+        <h1 className="text-3xl sm:text-4xl font-extrabold leading-[1.05] mt-1 flex items-center gap-2">
+          <Settings className="w-8 h-8 text-teal-600 shrink-0" aria-hidden="true" />
+          <span>Settings</span>
         </h1>
-        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-          Customize generation & embedding models, vector retrieval thresholds, typography scale, and data export.
-        </p>
       </div>
 
-      {exportMessage && (
-        <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 text-emerald-800 dark:text-emerald-300 text-xs rounded-lg flex items-center justify-between">
-          <span>{exportMessage}</span>
-          <button onClick={() => setExportMessage(null)} className="text-emerald-700 font-bold ml-2">
-            Dismiss
-          </button>
+      {message && (
+        <div role="status" className={`p-3 rounded-xl border-[1.5px] text-sm flex items-start justify-between gap-3 ${message.kind === 'ok' ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-200' : 'border-rose-400 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200'}`}>
+          <span>{message.text}</span>
+          <button onClick={() => setMessage(null)} className="btn btn-ghost btn-sm shrink-0">Dismiss</button>
         </div>
       )}
 
-      {deleteMessage && (
-        <div className="p-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 text-rose-800 dark:text-rose-300 text-xs rounded-lg flex items-center justify-between">
-          <span>{deleteMessage}</span>
-          <button onClick={() => setDeleteMessage(null)} className="text-rose-700 font-bold ml-2">
-            Dismiss
-          </button>
-        </div>
-      )}
-
-      {/* Model Selection */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 shadow-xs space-y-5">
-        <h2 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 flex items-center gap-2">
-          <Layers className="w-4 h-4 text-teal-600" />
-          <span>Gemini Model Architecture</span>
-        </h2>
-
+      <Section icon={<Layers className="w-6 h-6" />} title="Gemini models">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
-            <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-              Generation & Synthesis Model
-            </label>
-            <select
-              value={generationModel}
-              onChange={(e) => onSetGenerationModel(e.target.value)}
-              className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
-            >
+            <label className="label" htmlFor="set-gen">Writing model</label>
+            <select id="set-gen" value={generationModel} onChange={(e) => onSetGenerationModel(e.target.value)} className="field">
               {AVAILABLE_GENERATION_MODELS.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                </option>
+                <option key={m.id} value={m.id}>{m.name}</option>
               ))}
+              {extra.length > 0 && (
+                <optgroup label="Also available to your key">
+                  {extra.map((m) => (
+                    <option key={m.id} value={m.id}>{m.name}</option>
+                  ))}
+                </optgroup>
+              )}
             </select>
-            <p className="text-[11px] text-slate-400 mt-1">
-              Primary model used for streaming responses & symptom structured extraction.
+            <p className="text-xs text-slate-600 dark:text-slate-300 mt-1.5">
+              If this model is out of quota or busy, the server tries other Flash models automatically.
+              {!hasKey && ' (No server key detected, so the list is the built-in one.)'}
             </p>
           </div>
-
           <div>
-            <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-              Vector Embedding Model
-            </label>
-            <select
-              value={embeddingModel}
-              onChange={(e) => onSetEmbeddingModel(e.target.value)}
-              className="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
-            >
+            <label className="label" htmlFor="set-emb">Embedding model</label>
+            <select id="set-emb" value={embeddingModel} onChange={(e) => onSetEmbeddingModel(e.target.value)} className="field">
               {AVAILABLE_EMBEDDING_MODELS.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                </option>
+                <option key={m.id} value={m.id}>{m.name}</option>
               ))}
             </select>
-            <p className="text-[11px] text-slate-400 mt-1">
-              If changed, visit the Knowledge Base or click below to re-index documents.
-            </p>
+            <p className="text-xs text-slate-600 dark:text-slate-300 mt-1.5">Vectors from different embedding models cannot be mixed; the Library tab offers a re-index if you switch.</p>
           </div>
         </div>
-      </div>
+      </Section>
 
-      {/* RAG Hyperparameters */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 shadow-xs space-y-5">
-        <h2 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 flex items-center gap-2">
-          <Sliders className="w-4 h-4 text-teal-600" />
-          <span>Vector Search & Re-ranking Parameters</span>
-        </h2>
-
+      <Section icon={<Sliders className="w-6 h-6" />} title="Search">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Top-K */}
           <div>
-            <div className="flex justify-between items-center text-xs mb-1">
-              <span className="font-medium text-slate-700 dark:text-slate-300">
-                Top-K Passages Retrieved:
-              </span>
-              <span className="font-mono font-bold text-teal-700 dark:text-teal-400">
-                {topK} passages
-              </span>
-            </div>
-            <input
-              type="range"
-              min="1"
-              max="10"
-              value={topK}
-              onChange={(e) => onSetTopK(Number(e.target.value))}
-              className="w-full accent-teal-600 cursor-pointer"
-            />
-            <p className="text-[11px] text-slate-400 mt-1">
-              Number of most relevant passage chunks injected into the synthesis context.
-            </p>
+            <label className="label flex justify-between" htmlFor="set-topk">
+              <span>Passages used per answer</span>
+              <span className="font-mono">{topK}</span>
+            </label>
+            <input id="set-topk" type="range" min={1} max={10} value={topK} onChange={(e) => onSetTopK(Number(e.target.value))} className="w-full accent-teal-600" />
           </div>
-
-          {/* Similarity Threshold */}
           <div>
-            <div className="flex justify-between items-center text-xs mb-1">
-              <span className="font-medium text-slate-700 dark:text-slate-300">
-                Minimum Cosine Similarity Threshold:
-              </span>
-              <span className="font-mono font-bold text-teal-700 dark:text-teal-400">
-                {(similarityThreshold * 100).toFixed(0)}%
-              </span>
-            </div>
-            <input
-              type="range"
-              min="0.1"
-              max="0.8"
-              step="0.05"
-              value={similarityThreshold}
-              onChange={(e) => onSetSimilarityThreshold(Number(e.target.value))}
-              className="w-full accent-teal-600 cursor-pointer"
-            />
-            <p className="text-[11px] text-slate-400 mt-1">
-              Passages scoring below this similarity score are discarded as irrelevant.
-            </p>
+            <label className="label flex justify-between" htmlFor="set-th">
+              <span>Minimum similarity (semantic search)</span>
+              <span className="font-mono">{(similarityThreshold * 100).toFixed(0)}%</span>
+            </label>
+            <input id="set-th" type="range" min={0.1} max={0.8} step={0.05} value={similarityThreshold} onChange={(e) => onSetSimilarityThreshold(Number(e.target.value))} className="w-full accent-teal-600" />
           </div>
         </div>
+        <label className="flex items-start gap-3 cursor-pointer min-h-11">
+          <input type="checkbox" checked={rerankEnabled} onChange={(e) => onSetRerankEnabled(e.target.checked)} className="mt-1 accent-teal-600" />
+          <span>
+            <span className="font-extrabold text-sm block">Re-rank passages with Gemini</span>
+            <span className="text-xs text-slate-600 dark:text-slate-300">Better ordering in Chat, but it costs one extra Gemini request per question, so it is off by default.</span>
+          </span>
+        </label>
+      </Section>
 
-        {/* Re-ranking Toggle */}
-        <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
-          <label className="flex items-center gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={rerankEnabled}
-              onChange={(e) => onSetRerankEnabled(e.target.checked)}
-              className="w-4 h-4 rounded text-teal-600 focus:ring-teal-500"
-            />
-            <div>
-              <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
-                Enable Gemini Re-Ranking on Candidate Passages
-              </span>
-              <p className="text-[11px] text-slate-500">
-                Fetches candidate passages via vector cosine similarity, then asks Gemini to rescore relevance on a scale of 0 to 10.
-              </p>
-            </div>
-          </label>
+      <Section icon={<Type className="w-6 h-6" />} title="Reading size">
+        <div className="grid grid-cols-2 gap-3" role="group" aria-label="Text size">
+          <button onClick={() => onSetTextSize('normal')} aria-pressed={textSize === 'normal'} className={`btn ${textSize === 'normal' ? 'btn-primary' : ''}`}>Standard</button>
+          <button onClick={() => onSetTextSize('large')} aria-pressed={textSize === 'large'} className={`btn ${textSize === 'large' ? 'btn-primary' : ''}`}>Large</button>
         </div>
-      </div>
+      </Section>
 
-      {/* Accessibility & Typography */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 shadow-xs space-y-4">
-        <h2 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 flex items-center gap-2">
-          <Type className="w-4 h-4 text-teal-600" />
-          <span>Accessibility & Visual Ergonomics</span>
-        </h2>
-
-        <div>
-          <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-2">
-            Reading Font Size
-          </label>
-          <div className="flex gap-3">
-            <button
-              onClick={() => onSetTextSize('normal')}
-              className={`px-4 py-2 rounded-lg text-xs font-semibold border transition-colors ${
-                textSize === 'normal'
-                  ? 'bg-teal-50 dark:bg-teal-950/50 border-teal-500 text-teal-800 dark:text-teal-300'
-                  : 'border-slate-300 dark:border-slate-700 text-slate-600'
-              }`}
-            >
-              Standard (14px)
-            </button>
-            <button
-              onClick={() => onSetTextSize('large')}
-              className={`px-4 py-2 rounded-lg text-sm font-semibold border transition-colors ${
-                textSize === 'large'
-                  ? 'bg-teal-50 dark:bg-teal-950/50 border-teal-500 text-teal-800 dark:text-teal-300'
-                  : 'border-slate-300 dark:border-slate-700 text-slate-600'
-              }`}
-            >
-              Large Accessible (16px)
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Data Management & Privacy */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 shadow-xs space-y-4">
-        <h2 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 flex items-center gap-2">
-          <Database className="w-4 h-4 text-teal-600" />
-          <span>Local IndexedDB Data Management</span>
-        </h2>
-
-        <p className="text-xs text-slate-500 leading-relaxed">
-          Medi-RAG stores all documents, vectors, and chat history exclusively in your browser's private IndexedDB database. You can export a full JSON snapshot or wipe everything.
+      <Section icon={<Database className="w-6 h-6" />} title="Your data">
+        <p className="text-sm leading-relaxed">
+          Documents, passages and chat history live only in this browser (IndexedDB and localStorage). Export a copy or wipe everything.
         </p>
-
-        <div className="flex flex-wrap gap-3 pt-2">
-          <button
-            onClick={handleExportData}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-semibold transition-colors"
-          >
-            <Download className="w-4 h-4 text-teal-600" />
-            <span>Export Data (JSON)</span>
-          </button>
-
-          <button
-            onClick={handleDeleteAllData}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/40 border border-rose-200 dark:border-rose-900 text-rose-800 dark:text-rose-300 text-xs font-semibold transition-colors"
-          >
-            <Trash2 className="w-4 h-4 text-rose-600" />
-            <span>Delete All My Data (Reset)</span>
-          </button>
+        <div className="flex flex-col sm:flex-row gap-3">
+          <button onClick={handleExportData} className="btn"><Download className="w-4 h-4" /><span>Export data (JSON)</span></button>
+          <button onClick={handleDeleteAllData} className="btn btn-danger"><Trash2 className="w-4 h-4" /><span>Delete all my data</span></button>
         </div>
-      </div>
+      </Section>
     </div>
   );
 };

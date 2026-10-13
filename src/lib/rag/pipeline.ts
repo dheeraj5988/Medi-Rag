@@ -1,14 +1,9 @@
 import { StoredDocument, StoredChunk, RetrievalResult } from '../../types';
 import { chunkText } from './chunker';
 import { rankChunks } from './cosine';
-import {
-  saveDocument,
-  getAllDocuments,
-  saveChunks,
-  getChunksByModel,
-  clearAllChunksForDoc,
-} from './db';
-import { SAMPLE_DOCUMENTS } from './sampleDocs';
+import { bm25Rank, toRetrievalResults } from './lexical';
+import { saveDocument, getAllDocuments, getAllChunks, saveChunks, getChunksByModel } from './db';
+import { ensureBuiltInKnowledgeBase } from './kb';
 import { embedTexts, rerankPassages } from '../gemini/client';
 import { EMBEDDING_MODEL, DEFAULT_TOP_K, DEFAULT_SIMILARITY_THRESHOLD } from '../../constants';
 
@@ -20,65 +15,19 @@ export interface IngestionProgress {
   message: string;
 }
 
+const EMBED_BATCH = 16;
+
 /**
- * Initializes sample documents if the database has 0 documents.
+ * Seeds the built-in MedlinePlus knowledge base (no embedding API calls) and removes legacy sample documents.
+ * Kept under the old name so existing callers keep working.
  */
-export async function initializeSampleDocumentsIfEmpty(
-  embeddingModel: string = EMBEDDING_MODEL,
-  onProgress?: (msg: string) => void
-): Promise<void> {
-  const existingDocs = await getAllDocuments();
-  if (existingDocs.length > 0) return;
-
-  onProgress?.('Initializing verified sample clinical documents...');
-
-  for (const sample of SAMPLE_DOCUMENTS) {
-    const docId = sample.id;
-    const rawText = sample.content;
-    const chunksData = chunkText(rawText, 250, 30, 1);
-
-    const doc: StoredDocument = {
-      id: docId,
-      name: sample.name,
-      size: rawText.length,
-      pageCount: 1,
-      chunkCount: chunksData.length,
-      dateAdded: new Date().toISOString(),
-      trustedSource: sample.trustedSource,
-      isSample: true,
-    };
-
-    await saveDocument(doc);
-
-    // Embed chunks
-    const chunkTexts = chunksData.map((c) => c.text);
-    const embedRes = await embedTexts({
-      model: embeddingModel,
-      texts: chunkTexts,
-      docName: sample.name,
-    });
-
-    if (embedRes.success && embedRes.embeddings.length === chunksData.length) {
-      const storedChunks: StoredChunk[] = chunksData.map((c, idx) => ({
-        id: `${docId}-chunk-${idx}`,
-        docId,
-        docName: sample.name,
-        page: 1,
-        text: c.text,
-        vector: embedRes.embeddings[idx],
-        embeddingModel,
-        trustedSource: sample.trustedSource,
-        wordCount: c.wordCount,
-      }));
-      await saveChunks(storedChunks);
-    } else {
-      console.warn(`Could not embed sample doc ${sample.name}:`, embedRes.error);
-    }
-  }
+export async function initializeSampleDocumentsIfEmpty(embeddingModel: string = EMBEDDING_MODEL): Promise<void> {
+  await ensureBuiltInKnowledgeBase(embeddingModel);
 }
 
 /**
  * Ingests a new document (text or extracted PDF) with progress callbacks and abort signal.
+ * Passages are embedded in batches of 16 (one API request per batch, not per passage).
  */
 export async function ingestDocument(
   docData: {
@@ -109,14 +58,9 @@ export async function ingestDocument(
 
   if (signal?.aborted) throw new Error('Ingestion aborted by user');
 
-  // Multi-page or single text chunking
   const allChunks: Array<{ text: string; wordCount: number; page: number }> = [];
-
   if (docData.pages && docData.pages.length > 0) {
-    for (const p of docData.pages) {
-      const pageChunks = chunkText(p.text, chunkSize, chunkOverlap, p.pageNumber);
-      allChunks.push(...pageChunks);
-    }
+    for (const p of docData.pages) allChunks.push(...chunkText(p.text, chunkSize, chunkOverlap, p.pageNumber));
   } else {
     allChunks.push(...chunkText(docData.text, chunkSize, chunkOverlap, 1));
   }
@@ -133,32 +77,14 @@ export async function ingestDocument(
     message: `Generated ${allChunks.length} paragraph-aware passages. Preparing embeddings...`,
   });
 
-  const doc: StoredDocument = {
-    id: docData.id,
-    name: docData.name,
-    size: docData.text.length,
-    pageCount: docData.pageCount || 1,
-    chunkCount: allChunks.length,
-    dateAdded: new Date().toISOString(),
-    trustedSource: docData.trustedSource || 'User Upload',
-    isSample: false,
-  };
-
-  await saveDocument(doc);
-
-  // Embed in mini-batches of 4 to stay well within limits and allow progress updates
   const storedChunks: StoredChunk[] = [];
-  const batchSize = 4;
-
-  for (let i = 0; i < allChunks.length; i += batchSize) {
+  for (let i = 0; i < allChunks.length; i += EMBED_BATCH) {
     if (signal?.aborted) throw new Error('Ingestion aborted by user');
 
-    const slice = allChunks.slice(i, i + batchSize);
-    const sliceTexts = slice.map((c) => c.text);
-
+    const slice = allChunks.slice(i, i + EMBED_BATCH);
     const embedRes = await embedTexts({
       model: embeddingModel,
-      texts: sliceTexts,
+      texts: slice.map((c) => c.text),
       docName: docData.name,
     });
 
@@ -166,29 +92,27 @@ export async function ingestDocument(
       throw new Error(`Embedding failure: ${embedRes.error || 'Vector count mismatch'}`);
     }
 
-    for (let j = 0; j < slice.length; j++) {
+    slice.forEach((c, j) =>
       storedChunks.push({
         id: `${docData.id}-chunk-${i + j}`,
         docId: docData.id,
         docName: docData.name,
-        page: slice[j].page,
-        text: slice[j].text,
+        page: c.page,
+        text: c.text,
         vector: embedRes.embeddings[j],
         embeddingModel,
         trustedSource: docData.trustedSource || 'User Upload',
-        wordCount: slice[j].wordCount,
-      });
-    }
+        wordCount: c.wordCount,
+      })
+    );
 
-    const currentCount = Math.min(allChunks.length, i + batchSize);
-    const pct = Math.floor(15 + (currentCount / allChunks.length) * 75);
-
+    const done = Math.min(allChunks.length, i + EMBED_BATCH);
     onProgress?.({
       stage: 'embedding',
-      currentChunk: currentCount,
+      currentChunk: done,
       totalChunks: allChunks.length,
-      percentage: pct,
-      message: `Embedding passage ${currentCount} of ${allChunks.length} using ${embeddingModel}...`,
+      percentage: Math.floor(15 + (done / allChunks.length) * 75),
+      message: `Embedding passage ${done} of ${allChunks.length} using ${embeddingModel}...`,
     });
   }
 
@@ -200,6 +124,18 @@ export async function ingestDocument(
     message: 'Saving passages to browser IndexedDB store...',
   });
 
+  // Only now (all embeddings succeeded) record the document, so a failed upload leaves nothing half-indexed.
+  const doc: StoredDocument = {
+    id: docData.id,
+    name: docData.name,
+    size: docData.text.length,
+    pageCount: docData.pageCount || 1,
+    chunkCount: allChunks.length,
+    dateAdded: new Date().toISOString(),
+    trustedSource: docData.trustedSource || 'User Upload',
+    isSample: false,
+  };
+  await saveDocument(doc);
   await saveChunks(storedChunks);
 
   onProgress?.({
@@ -207,12 +143,13 @@ export async function ingestDocument(
     currentChunk: allChunks.length,
     totalChunks: allChunks.length,
     percentage: 100,
-    message: 'Document indexed and ready for clinical retrieval.',
+    message: 'Document indexed and ready for retrieval.',
   });
 }
 
 /**
- * Re-index all existing documents with a new embedding model.
+ * Re-embed EVERY stored passage (built-in and uploaded) with a new embedding model, from the passage text
+ * already in IndexedDB. (The original version deleted uploaded documents' chunks without re-embedding them.)
  */
 export async function reindexAllDocuments(
   newModel: string,
@@ -220,60 +157,43 @@ export async function reindexAllDocuments(
 ): Promise<void> {
   const docs = await getAllDocuments();
   if (docs.length === 0) return;
+  const chunks = await getAllChunks();
+  if (chunks.length === 0) return;
 
-  for (let docIdx = 0; docIdx < docs.length; docIdx++) {
-    const doc = docs[docIdx];
-    onProgress?.({
-      stage: 'chunking',
-      currentChunk: docIdx,
-      totalChunks: docs.length,
-      percentage: Math.floor((docIdx / docs.length) * 100),
-      message: `Re-indexing document "${doc.name}" with ${newModel}...`,
-    });
-
-    // Clear old chunks for doc
-    await clearAllChunksForDoc(doc.id);
-
-    // If it's a sample doc, recreate from sample definition
-    const sampleDef = SAMPLE_DOCUMENTS.find((s) => s.id === doc.id);
-    const content = sampleDef ? sampleDef.content : '';
-
-    if (content) {
-      const chunksData = chunkText(content, 300, 40, 1);
-      const embedRes = await embedTexts({
-        model: newModel,
-        texts: chunksData.map((c) => c.text),
-        docName: doc.name,
-      });
-
-      if (embedRes.success && embedRes.embeddings.length === chunksData.length) {
-        const storedChunks: StoredChunk[] = chunksData.map((c, idx) => ({
-          id: `${doc.id}-chunk-${idx}`,
-          docId: doc.id,
-          docName: doc.name,
-          page: 1,
-          text: c.text,
-          vector: embedRes.embeddings[idx],
-          embeddingModel: newModel,
-          trustedSource: doc.trustedSource,
-          wordCount: c.wordCount,
-        }));
-        await saveChunks(storedChunks);
-      }
+  const updated: StoredChunk[] = [];
+  for (let i = 0; i < chunks.length; i += EMBED_BATCH) {
+    const slice = chunks.slice(i, i + EMBED_BATCH);
+    const res = await embedTexts({ model: newModel, texts: slice.map((c) => c.text), titles: slice.map((c) => c.docName) });
+    if (!res.success || res.embeddings.length !== slice.length) {
+      throw new Error(res.error || 'Vector count mismatch while re-indexing');
     }
+    slice.forEach((c, j) => updated.push({ ...c, vector: res.embeddings[j], embeddingModel: newModel }));
+    const done = Math.min(chunks.length, i + EMBED_BATCH);
+    onProgress?.({
+      stage: 'embedding',
+      currentChunk: done,
+      totalChunks: chunks.length,
+      percentage: Math.floor((done / chunks.length) * 95),
+      message: `Re-embedding passage ${done} of ${chunks.length} with ${newModel}...`,
+    });
   }
+  await saveChunks(updated);
 
   onProgress?.({
     stage: 'complete',
-    currentChunk: docs.length,
-    totalChunks: docs.length,
+    currentChunk: chunks.length,
+    totalChunks: chunks.length,
     percentage: 100,
-    message: `All documents re-indexed with ${newModel}.`,
+    message: `All passages re-indexed with ${newModel}.`,
   });
 }
 
 /**
- * Query the vector store and retrieve relevant passages with optional re-ranking.
+ * Query the knowledge base.
+ *  - Passages that have vectors are ranked by cosine similarity to the query embedding (one embedding call).
+ *  - Passages without vectors (the built-in MedlinePlus set before semantic vectors are computed) are ranked by
+ *    keyword (BM25), so retrieval still works with no API key and no embeddings.
+ *  - Optional Gemini re-ranking (off by default; costs one extra call).
  */
 export async function retrievePassages(
   query: string,
@@ -293,57 +213,72 @@ export async function retrievePassages(
     rerankModel = 'gemini-3.1-flash-lite',
   } = options;
 
-  // 1. Embed query
-  const queryEmbedRes = await embedTexts({
-    model: embeddingModel,
-    texts: [query],
-    query: true,
-  });
+  const all = await getAllChunks();
+  if (all.length === 0) return [];
+  const withVectors = all.filter((c) => c.vector && c.vector.length > 0);
+  const withoutVectors = all.filter((c) => !c.vector || c.vector.length === 0);
 
-  if (!queryEmbedRes.success || !queryEmbedRes.embeddings[0]) {
-    console.error('Failed to embed query:', queryEmbedRes.error);
-    return [];
-  }
-
-  const queryVector = queryEmbedRes.embeddings[0];
-
-  // 2. Load stored chunks for the target model
-  const chunks = await getChunksByModel(embeddingModel);
-  if (chunks.length === 0) {
-    return [];
-  }
-
-  // 3. Cosine similarity
-  // If reranking is enabled, fetch top 8 candidates first
   const candidateK = rerank ? Math.max(8, topK) : topK;
-  const initialRanked = rankChunks(queryVector, chunks, candidateK, similarityThreshold);
+  let ranked: RetrievalResult[] = [];
 
-  if (!rerank || initialRanked.length <= 1) {
-    return initialRanked.slice(0, topK);
+  // 1. vector search over passages that have vectors for the active model
+  if (withVectors.length > 0) {
+    const modelChunks = await getChunksByModel(embeddingModel);
+    if (modelChunks.length > 0) {
+      const q = await embedTexts({ model: embeddingModel, texts: [query], query: true });
+      if (q.success && q.embeddings[0]) {
+        ranked.push(...rankChunks(q.embeddings[0], modelChunks, candidateK, similarityThreshold).map((r) => ({ ...r, method: 'vector' as const })));
+      }
+    }
   }
 
-  // 4. Optional Gemini re-ranking of candidates
+  // 2. keyword search over passages with no vector (and over everything if the vector search found nothing)
+  const lexicalPool = ranked.length === 0 ? all : withoutVectors;
+  if (lexicalPool.length > 0) {
+    // keep only passages close to the best keyword match (drops weak, unrelated stragglers)
+    const lex = bm25Rank(query, lexicalPool, candidateK);
+    const topRaw = lex[0]?.raw ?? 0;
+    ranked.push(...toRetrievalResults(lex.filter((h) => h.score >= 0.15 && h.raw >= 0.4 * topRaw)));
+  }
+
+  ranked.sort((a, b) => b.score - a.score);
+  ranked = ranked.slice(0, candidateK);
+
+  if (!rerank || ranked.length <= 1) return ranked.slice(0, topK);
+
   try {
-    const candidateTexts = initialRanked.map(
-      (r) => `[Source: ${r.chunk.docName}, Source Label: ${r.chunk.trustedSource}]\n${r.chunk.text}`
-    );
-    const scores = await rerankPassages(query, candidateTexts, rerankModel);
-
-    const reranked = initialRanked.map((item, idx) => ({
-      ...item,
-      rerankScore: scores[idx] !== undefined ? scores[idx] : 5,
-    }));
-
-    // Sort by rerank score descending, breaking ties with cosine similarity
+    const texts = ranked.map((r) => `[Source: ${r.chunk.docName}, Source Label: ${r.chunk.trustedSource}]\n${r.chunk.text}`);
+    const scores = await rerankPassages(query, texts, rerankModel);
+    const reranked = ranked.map((item, idx) => ({ ...item, rerankScore: scores[idx] !== undefined ? scores[idx] : 5 }));
     reranked.sort((a, b) => {
-      const scoreDiff = (b.rerankScore || 0) - (a.rerankScore || 0);
-      if (Math.abs(scoreDiff) > 0.5) return scoreDiff;
-      return b.score - a.score;
+      const diff = (b.rerankScore || 0) - (a.rerankScore || 0);
+      return Math.abs(diff) > 0.5 ? diff : b.score - a.score;
     });
-
     return reranked.slice(0, topK);
   } catch (err) {
-    console.warn('Rerank failed, returning vector rank:', err);
-    return initialRanked.slice(0, topK);
+    console.warn('Rerank failed, returning first-stage ranking:', err);
+    return ranked.slice(0, topK);
   }
+}
+
+/**
+ * Passages for ONE predicted condition: only pages whose `covers` list contains that condition, ranked by keyword
+ * relevance to the condition + the patient's symptoms. Deterministic, free (no API call) and works offline.
+ * Falls back to normal retrieval when no built-in page covers the condition (for example a user-added document).
+ */
+export async function retrieveForCondition(
+  condition: string,
+  symptomText: string,
+  options: { embeddingModel: string; topK?: number; similarityThreshold?: number }
+): Promise<RetrievalResult[]> {
+  const { topK = 2 } = options;
+  const all = await getAllChunks();
+  const pool = all.filter((c) => c.covers?.includes(condition));
+  if (pool.length === 0) {
+    return retrievePassages(`${condition} ${symptomText}`, { ...options, topK });
+  }
+  const ranked = bm25Rank(`${condition} ${symptomText}`, pool, topK);
+  if (ranked.length > 0) return toRetrievalResults(ranked, 'disease-filter');
+  // nothing matched by keyword: still return the page's opening passages (they cover the basics)
+  return pool.slice(0, topK).map((chunk) => ({ chunk, score: 0.2, method: 'disease-filter' as const }));
 }
